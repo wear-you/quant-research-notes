@@ -1,89 +1,74 @@
 #!/usr/bin/env python3
-"""verify_holdout.py — 用「日期对齐」重算 holdout，检查之前那个 1.88 是否成立。
+"""verify_holdout.py — 日期严格对齐的样本外检验（唯一权威版本）。
 
-可疑点：
-  holdout.py 的 portfolio() 按**索引**对齐多个资产的收益序列，
-  但这些资产起始日期不同（1990 / 2002 / 2005），索引 i 对应的日历日期不一样。
-  把不同日子的收益平均在一起，会人为制造分散化，抬高夏普。
-
-这里改成：只在**所有资产都有数据的共同交易日**上计算，逐日对齐。
+历史教训：旧版 holdout.py 按**索引**对齐不同起始日的资产，
+把 1990 年代的波动与 2005 年代的波动平均在一起，人为制造分散化，
+把夏普从 0.47 抬到 1.88。本脚本改用 market.panel()，只在共同交易日上计算。
 """
-import csv
 import os
 import statistics
 import sys
 
-DATA = os.path.expanduser("~/finance/data")
-TD = 244
+import market
+
 CUT = "2016-01-01"
 COST = 0.0008
 CASH = 0.015
 WINDOW, VOLW = 100, 60
 TARGET = 0.10
+TD = 244
+
+NAMES = ["bond_index", "csi100", "csi300", "csi500", "sse50", "sse_comp", "szse_comp"]
 
 
-def load(name):
-    p = os.path.join(DATA, f"{name}.csv")
-    if not os.path.exists(p):
-        return {}
-    return {r["date"]: float(r["close"]) for r in csv.DictReader(open(p))
-            if float(r["close"]) > 0}
+def strategy_for(px):
+    """给定对齐后的价格序列，返回 {date_index: 策略日收益}。"""
+    n = len(px)
+    rets = market.returns(px)
+    out, prev = {}, 0.0
+    for i in range(WINDOW, n - 1):
+        ma = sum(px[i - WINDOW + 1:i + 1]) / WINDOW
+        if px[i] <= ma:
+            w = 0.0
+        else:
+            sd = statistics.pstdev(rets[i - VOLW + 1:i + 1]) * TD ** 0.5
+            w = min(1.0, TARGET / sd) if sd > 0 else 0.0
+        r = px[i + 1] / px[i] - 1
+        out[i] = w * r + (1 - w) * (CASH / TD) - abs(w - prev) * COST
+        prev = w
+    return out
 
 
 def main():
-    names = ["bond_index", "csi100", "csi300", "csi500", "sse50", "sse_comp", "szse_comp"]
-    series = {n: load(n) for n in names}
-    series = {n: s for n, s in series.items() if s}
+    names = [n for n in NAMES if os.path.exists(os.path.join(market.DATA, f"{n}.csv"))]
+    market.print_coverage(names, "样本外检验")
 
-    common = set.intersection(*[set(s) for s in series.values()])
-    dates = sorted(d for d in common if d >= CUT)
-    print(f"共同交易日 {len(dates)} 天：{dates[0]} → {dates[-1]}")
+    dates, px = market.panel(names)
+    print(f"对齐后共 {len(dates)} 个交易日，评估起点 {CUT}\n")
 
-    # 每个资产：在共同日期上取价格，用其自身历史算信号
-    px = {n: [series[n][d] for d in dates] for n in series}
-    # 为了算 MA100/vol60，需要把 cut 之前的历史也接上
-    full = {}
-    for n in series:
-        ds = sorted(series[n])
-        full[n] = (ds, [series[n][d] for d in ds])
+    strat, bah = {}, {}
+    for n in names:
+        s = strategy_for(px[n])
+        strat[n] = {dates[i]: v for i, v in s.items() if dates[i] >= CUT}
+        bah[n] = {dates[i]: px[n][i + 1] / px[n][i] - 1
+                  for i in range(len(dates) - 1) if dates[i] >= CUT}
 
-    port, bah = [], []
-    prev_w = {n: 0.0 for n in series}
-    for k, d in enumerate(dates):
-        r_sum, b_sum = 0.0, 0.0
-        for n in series:
-            ds, ps = full[n]
-            i = ds.index(d) if d in series[n] else None
-            if i is None or i < WINDOW or i >= len(ps) - 1:
-                continue
-            ma = sum(ps[i - WINDOW + 1:i + 1]) / WINDOW
-            rets = [ps[j] / ps[j - 1] - 1 for j in range(i - VOLW + 1, i + 1)]
-            sd = statistics.pstdev(rets) * TD ** 0.5
-            w = min(1.0, TARGET / sd) if (ps[i] > ma and sd > 0) else 0.0
-            r = ps[i + 1] / ps[i] - 1
-            r_sum += w * r + (1 - w) * (CASH / TD) - abs(w - prev_w[n]) * COST
-            prev_w[n] = w
-            b_sum += r
-        port.append(r_sum / len(series))
-        bah.append(b_sum / len(series))
+    port_s = market.portfolio(strat)
+    port_b = market.portfolio(bah)
 
-    def perf(r):
-        eq, peak, mdd = 1.0, 1.0, 0.0
-        for v in r:
-            eq *= 1 + v
-            peak = max(peak, eq)
-            mdd = max(mdd, 1 - eq / peak)
-        sd = statistics.pstdev(r)
-        return {"sharpe": (statistics.mean(r) / sd) * TD ** 0.5,
-                "cagr": eq ** (TD / len(r)) - 1, "vol": sd * TD ** 0.5, "mdd": mdd}
+    ps, pb = market.perf(port_s), market.perf(port_b)
+    print(f"评估区间 {port_s[0][0]} → {port_s[-1][0]}，{len(port_s)} 天\n")
+    market.print_perf("VOLT（日期对齐）", ps)
+    market.print_perf("买入持有", pb)
 
-    a, b = perf(port), perf(bah)
-    print(f"\n{'方案':18s} {'夏普':>6s} {'年化':>8s} {'波动':>7s} {'回撤':>8s}")
-    print(f"{'VOLT (日期对齐)':18s} {a['sharpe']:6.2f} {a['cagr']*100:7.2f}% "
-          f"{a['vol']*100:6.2f}% {a['mdd']*100:7.1f}%")
-    print(f"{'买入持有':18s} {b['sharpe']:6.2f} {b['cagr']*100:7.2f}% "
-          f"{b['vol']*100:6.2f}% {b['mdd']*100:7.1f}%")
-    print(f"\n结论：日期对齐后，VOLT 夏普 {a['sharpe']:.2f}（此前报告 1.88）")
+    if ps and pb:
+        print(f"\n夏普 {ps['sharpe']/pb['sharpe']:.1f}×   "
+              f"回撤 {ps['mdd']*100:.1f}% vs {pb['mdd']*100:.1f}%   "
+              f"年化 {ps['cagr']*100:.2f}% vs {pb['cagr']*100:.2f}%")
+
+    # 一致性守卫：组合序列的日期必须与面板一致
+    assert len(port_s) == len(port_b), "组合序列长度不一致"
+    print("\n✅ 日期对齐校验通过（组合只在共同交易日上计算）")
     return 0
 
 

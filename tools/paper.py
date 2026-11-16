@@ -19,6 +19,8 @@ import statistics
 import sys
 from datetime import datetime, timezone, timedelta
 
+import market
+
 DATA = os.path.expanduser("~/finance/data")
 LEDGER = os.path.expanduser("~/finance/ledger.csv")
 CN = (0.0008, 0.0008)
@@ -81,6 +83,21 @@ def last_state(rows, asset, strat):
         if r["asset"] == asset and r["strategy"] == strat:
             return float(r["equity"]), float(r["pos"]), r["date"], float(r["price"])
     return 1.0, 0.0, None, None
+
+
+def portfolio_perf(all_rows, strat):
+    """按日期对齐计算组合层绩效（使用 market.portfolio，禁止索引对齐）。"""
+    per = {}
+    for r in all_rows:
+        if r["strategy"] != strat or not r.get("day_ret"):
+            continue
+        try:
+            per.setdefault(r["asset"], {})[r["date"]] = float(r["day_ret"])
+        except ValueError:
+            continue
+    if len(per) < 2:
+        return None
+    return market.perf(market.portfolio(per))
 
 
 def main():
@@ -146,7 +163,17 @@ def main():
                 f"| {name} | {float(s['TREND']['price']):.2f} | {float(s['TREND']['pos']):.1f} | "
                 f"{float(s['VOLT']['pos']):.2f} | {float(s['TREND']['equity']):.4f} | "
                 f"{float(s['VOLT']['equity']):.4f} | {float(s['BAH']['equity']):.4f} |")
-        lines += ["", "> 纸面记录，未涉及真实资金。规则见 backtest2.py，非对称成本已计入换仓。"]
+        lines += ["", "## 组合层（日期对齐）", "",
+                  "| 策略 | 夏普 | 年化 | 波动 | 回撤 | 样本 |", "|---|---|---|---|---|---|"]
+        for st in ("VOLT", "TREND", "BAH"):
+            p = portfolio_perf(rows + out, st)
+            if p:
+                lines.append(f"| {st} | {p['sharpe']:.2f} | {p['cagr']*100:.2f}% | "
+                             f"{p['vol']*100:.2f}% | {p['mdd']*100:.1f}% | {p['n']} |")
+            else:
+                lines.append(f"| {st} | — | — | — | — | 积累中 |")
+        lines += ["", "> 纸面记录，未涉及真实资金。参数冻结 MA100/10%，空仓计息 1.5%。",
+                  "> 组合层只在共同交易日上计算（market.portfolio），禁止索引对齐。"]
         open(path, "w").write("\n".join(lines))
         print(f"\n报告: {path}")
     return 0

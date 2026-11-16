@@ -59,16 +59,12 @@ def strat_returns(rows, window, target):
     return out
 
 
-def portfolio(per_asset, assets):
-    """等权组合：每个资产先算自己的策略收益，再取平均。"""
-    series = []
-    for a in assets:
-        s = per_asset[a]
-        if s:
-            series.append(s)
-    L = min(len(s) for s in series)
-    return [(series[0][i][0], sum(s[i][1] for s in series) / len(series))
-            for i in range(L)]
+def portfolio(per_asset):
+    """按**日期**对齐后平均。per_asset: {name: {date: ret}}。"""
+    common = set.intersection(*[set(v) for v in per_asset.values()])
+    dates = sorted(common)
+    k = len(per_asset)
+    return [(d, sum(v[d] for v in per_asset.values()) / k) for d in dates]
 
 
 def perf(series):
@@ -92,6 +88,11 @@ def split(series):
 
 
 def main():
+    if "--force-legacy" not in sys.argv:
+        print("⚠️  holdout.py 已废弃：它按索引对齐不同起始日的资产，会抬高夏普。")
+        print("   权威版本： python3 verify_holdout.py（日期严格对齐）")
+        print("   确实要跑旧版（仅用于对照），加 --force-legacy")
+        return 2
     names = sorted(os.path.basename(p)[:-4] for p in os.listdir(DATA) if p.endswith(".csv"))
     assets = [n for n in names if len(load(n)) >= MIN_BARS]
     print(f"资产（≥{MIN_BARS} 根）：{', '.join(assets)}\n")
@@ -107,7 +108,7 @@ def main():
             full = {}
             for a in assets:
                 full[a] = strat_returns(load(a), w, t)
-            port = portfolio(full, assets)
+            port = portfolio({a: dict(s) for a, s in full.items() if s})
             is_s, oos_s = split(port)
             configs.append((label, w, t, is_s, oos_s))
 
