@@ -25,6 +25,7 @@ DATA = os.path.expanduser("~/finance/data")
 TD = 244
 CUT = "2016-01-01"
 COST = 0.0008
+CASH = 0.015          # 空仓部分按货币基金 1.5%/年计息（此前记为 0，属建模缺陷）
 MIN_BARS = 5000
 WINDOWS = (100, 150, 200, 250)
 TARGETS = (0.10, 0.15, 0.20, 0.30)
@@ -52,7 +53,7 @@ def strat_returns(rows, window, target):
         else:
             sd = statistics.pstdev(rets[i - VOLW + 1:i + 1]) * TD ** 0.5
             w = min(1.0, target / sd) if sd > 0 else 0.0
-        pnl = w * (px[i + 1] / px[i] - 1) - abs(w - prev) * COST
+        pnl = w * (px[i + 1] / px[i] - 1) + (1 - w) * (CASH / TD) - abs(w - prev) * COST
         out.append((dates[i], pnl))
         prev = w
     return out

@@ -13,6 +13,7 @@
 用法：python3 paper.py [--report]
 """
 import csv
+import glob
 import os
 import statistics
 import sys
@@ -22,16 +23,25 @@ DATA = os.path.expanduser("~/finance/data")
 LEDGER = os.path.expanduser("~/finance/ledger.csv")
 CN = (0.0008, 0.0008)
 CR = (0.0010, 0.0010)
-COST = {
-    "csi300": CN, "csi500": CN, "sse50": CN, "sse_comp": CN, "szse_comp": CN,
-    "chinext": CN, "star50": CN, "gold": CN, "bond10y": CN, "nasdaq_etf": CN, "hsi": CN,
-    "btc": CR, "eth": CR, "sol": CR,
-}
-WINDOW = 200
+CRYPTO = {"btc", "eth", "sol", "bnb", "xrp", "ada", "doge", "link", "avax",
+          "dot", "ltc", "bch", "trx"}
+# 冻结参数：2016 年真样本外检验选出的配置（见 holdout.py），此后不再改动
+WINDOW = 100
 VOLW = 60
-TARGET_VOL = 0.15
+TARGET_VOL = 0.10
+# 空仓部分的收益：按货币基金保守估计 1.5%/年（此前模型记为 0，低估了策略表现）
+CASH_RATE = 0.015
 TD = 244
 TZ = timezone(timedelta(hours=8))
+
+
+def asset_list():
+    return sorted(os.path.basename(p)[:-4]
+                  for p in glob.glob(os.path.join(DATA, "*.csv")))
+
+
+def cost_for(name):
+    return CR if name in CRYPTO else CN
 
 
 def load(name):
@@ -79,7 +89,7 @@ def main():
     today = datetime.now(TZ).strftime("%Y-%m-%d")
     out = []
 
-    for name in sorted(COST):
+    for name in asset_list():
         bars = load(name)
         if len(bars) < WINDOW + 2:
             continue
@@ -87,7 +97,8 @@ def main():
         last_day, px = bars[-1]["date"], prices[-1]
         sig_t = float(trend_pos(prices))
         sig_v = volt_pos(prices)
-        buy, sell = COST[name]
+        buy, sell = cost_for(name)
+        cash_d = CASH_RATE / TD
 
         for strat, target in (("TREND", sig_t), ("VOLT", sig_v), ("BAH", 1.0)):
             eq, pos_prev, prev_day, prev_px = last_state(rows, name, strat)
@@ -95,7 +106,7 @@ def main():
                 eq_new, r = eq, 0.0
             else:
                 r = px / prev_px - 1
-                eq_new = eq * (1 + pos_prev * r)
+                eq_new = eq * (1 + pos_prev * r + (1 - pos_prev) * cash_d)
                 d = target - pos_prev
                 if d > 0:
                     eq_new *= (1 - d * buy)
