@@ -59,8 +59,12 @@ def load_json(p, default):
 
 
 def save_json(p, obj):
+    """原子写：先写临时文件再 rename，避免读到半截 JSON。"""
     os.makedirs(os.path.dirname(p), exist_ok=True)
-    json.dump(obj, open(p, "w"))
+    tmp = f"{p}.tmp.{os.getpid()}"
+    with open(tmp, "w") as f:
+        json.dump(obj, f)
+    os.replace(tmp, p)
 
 
 def universe(n):
