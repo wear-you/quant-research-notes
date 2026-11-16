@@ -145,6 +145,9 @@ def main():
     names = sorted(os.path.basename(p)[:-4] for p in glob.glob(os.path.join(DATA, "*.csv"))
                    if os.path.basename(p)[:-4] not in CRYPTO)
     names = [n for n in names if load(n)]
+    if "--long" in sys.argv:
+        names = [n for n in names if len(load(n)) >= 5000]
+        print("【长样本模式】只保留 >=5000 根的资产")
     print(f"资产池 {len(names)} 个：{', '.join(names)}")
 
     configs, labels = [], []
