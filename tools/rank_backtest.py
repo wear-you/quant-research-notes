@@ -162,13 +162,25 @@ def decile_spread(df, col, sign):
     return out
 
 
-def stats(x):
+def stats(x, nw_lag=0):
+    """nw_lag>0 时用 Newey-West 调整方差：重叠持有期的收益/IC 序列存在自相关，
+    朴素 t 会虚高 1.5–3 倍（lag 取 H-1）。"""
     x = np.asarray(x, dtype=float)
+    x = x[~np.isnan(x)]
     if len(x) < 20:
         return None
-    m, sd = x.mean(), x.std(ddof=1)
-    return {"n": len(x), "mean": m, "std": sd,
-            "ir": m / sd if sd else 0, "t": m / sd * np.sqrt(len(x)) if sd else 0}
+    m = x.mean()
+    n = len(x)
+    d = x - m
+    var = (d @ d) / n
+    if nw_lag > 0:
+        for l in range(1, min(nw_lag, n - 1) + 1):
+            w = 1 - l / (nw_lag + 1)
+            var += 2 * w * (d[l:] @ d[:-l]) / n
+    var = max(var, 1e-12)
+    sd = var ** 0.5
+    return {"n": n, "mean": m, "std": sd,
+            "ir": m / sd if sd else 0, "t": m / sd * np.sqrt(n) if sd else 0}
 
 
 def main():
@@ -183,33 +195,36 @@ def main():
     print("=" * 74)
     print("单因子 IC（秩相关：因子值 vs 未来超额收益）")
     print("=" * 74)
-    print(f"{'因子':12s} {'方向':4s} {'IC均值':>8s} {'ICIR':>7s} {'t':>7s} {'天数':>6s}  说明")
-    print("-" * 74)
+    print(f"{'因子':12s} {'方向':4s} {'IC均值':>8s} {'ICIR':>7s} {'t朴素':>7s} {'t(NW)':>7s} {'天数':>6s}  说明")
+    print("-" * 82)
     results = {}
     for col, sign, desc in FACTORS:
         ic = ic_series(df, col)
         if sign == "-":
             ic = -ic
         st = stats(ic.values)
-        if not st:
+        stw = stats(ic.values, H - 1)
+        if not st or not stw:
             continue
         results[col] = (st, ic)
-        flag = "✅" if abs(st["t"]) >= 3.0 else ("⚠️" if abs(st["t"]) >= 2.0 else "  ")
-        print(f"{col:12s} {sign:4s} {st['mean']:+8.4f} {st['ir']:+7.3f} "
-              f"{st['t']:+7.2f} {st['n']:6d}  {flag}{desc}")
+        flag = "✅" if abs(stw["t"]) >= 3.0 else ("⚠️" if abs(stw["t"]) >= 2.0 else "  ")
+        print(f"{col:12s} {sign:4s} {st['mean']:+8.4f} {stw['ir']:+7.3f} "
+              f"{st['t']:+7.2f} {stw['t']:+7.2f} {st['n']:6d}  {flag}{desc}")
 
     print("\n" + "=" * 74)
     print("分层：顶 10% − 底 10% 的超额收益")
     print("=" * 74)
-    print(f"{'因子':12s} {'均值价差':>9s} {'t':>6s} {'中位价差':>9s} {'t':>6s} {'换手':>7s}")
-    print("-" * 74)
+    print(f"{'因子':12s} {'均值价差':>9s} {'t朴素':>7s} {'t(NW)':>7s} {'中位价差':>9s} {'t(NW)':>7s} {'换手':>7s}")
+    print("-" * 82)
     for col, sign, desc in FACTORS:
         sp = decile_spread(df, col, sign)
         if len(sp) < 20:
             continue
         st = stats([x[3] for x in sp])
+        stw = stats([x[3] for x in sp], H - 1)
         sm = stats([x[5] for x in sp])
-        if not st or not sm:
+        smw = stats([x[5] for x in sp], H - 1)
+        if not (st and stw and sm and smw):
             continue
         tos = []
         prev = None
@@ -219,8 +234,8 @@ def main():
                 tos.append(2 * (1 - len(hold & prev) / max(1, len(hold))))
             prev = hold
         to = np.mean(tos) if tos else 0.0
-        print(f"{col:12s} {st['mean']*100:+8.3f}% {st['t']:+6.2f} "
-              f"{sm['mean']*100:+8.3f}% {sm['t']:+6.2f} {to*100:6.1f}%")
+        print(f"{col:12s} {st['mean']*100:+8.3f}% {st['t']:+7.2f} {stw['t']:+7.2f} "
+              f"{sm['mean']*100:+8.3f}% {smw['t']:+7.2f} {to*100:6.1f}%")
 
     # 组合因子（方向按文献先验，事后不调）
     print("\n" + "=" * 74)
